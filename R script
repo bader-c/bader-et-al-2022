@@ -1,0 +1,111 @@
+library(morphomap)
+library(colorRamps)
+library(Morpho)
+library(geomorph)
+library(Rvcg)
+library(rgl)
+library(factoextra)
+
+############# 2D mapping 
+
+## Import mesh
+template.mesh <- ply2mesh(file="mesh.ply") 
+meshes<-morphomapSegm(template.mesh, param1=3)
+perMesh<-meshes$external
+endMesh<-meshes$internal
+morphomapCheck(template.mesh)
+
+## Check the output from morphomapSegm, if the meshes are not complete try to change the param1 (usually from 2.5 to 4.5)
+open3d()
+wire3d(endMesh,col=3)
+wire3d(perMesh,col=2)
+
+mech_length<-56 #Length of the bone in mm
+
+rawSections<-morphomapCore(out.sur=perMesh,inn.sur=endMesh,num.sect=61,mech.len = mech_length, start = 0.2,end=0.80) #Start & end to place limits of the epiphyses
+shapeSections<-morphomapShape(rawSections,100,sects_vector=NULL,cent.out="CCA",
+                              delta=0.1, side="right") # Here the "100" is the number of LM
+
+## Thickness
+thickarray<-morphomapThickness(morphomap.shape=shapeSections)
+
+## Build 2D morphometric map with GAM smoothing
+bone2Dmap<-morphomap2Dmap(morphomap.shape=shapeSections,gam=TRUE,
+                          plot = TRUE, rem.out = TRUE,fac.out = 1.0, pal = blue2green2red(101),
+                          aspect=2)
+## Build 3D morphometric map with GAM smoothing
+bone3Dmap<-morphomap3Dmap(morphomap.shape = shapeSections,out.sur = perMesh,rem.out = TRUE)
+
+## Build data frame suitable for morphometric maps
+dataDF<-morphomapDF(thickarray,rem.out = T, fac.out = 0.5, smooth = T, scale = F, 
+                    smooth.iter = 5, method = 'closest', unwrap = "A")$XYZ
+
+## Save dataDF to RDS
+saveRDS(dataDF, file = "map.RDS") #repeat for each specimen
+
+
+############# PCA
+
+# Import RDS files
+specimen1 <- readRDS(file = "map1.RDS")
+specimen2 <- readRDS(file = "map2.RDS")
+specimen3 <- readRDS(file = "map3.RDS")
+
+# Extraction of the z column
+specimen1 <- specimen1$Z
+specimen2 <- specimen2$Z
+specimen3 <- specimen3$Z
+
+# Creation of a data frame with the thickness values
+DFZ <- rbind(specimen1, specimen2, specimen3)
+
+# Import data frame with specimen info (specie, age, sex, etc...)
+DF <- read.csv("info_specimens.csv", sep=";")
+specie = DF$specie
+names <- rownames(DFZ)
+
+# PCA
+PCA <- prcomp(DFZ)
+
+# PCA axes
+PC1<-PCA$x[,1]
+PC2<-PCA$x[,2]
+PC3<-PCA$x[,3]
+PC4<-PCA$x[,4]
+
+# Dataframe with PCA axes + info
+PCA_DF<-data.frame(PC1,PC2,specie)
+summary(PCA)
+
+#Geomorph dataframe 
+gdf<- geomorph.data.frame(DFZ = DFZ, specie=specie)
+
+# Plot
+hull_PCA<- PCA_DF %>%
+  group_by(specie) %>%
+  slice(chull(PC1, PC2))
+
+ggplot(PCA_DF, aes(PC1, PC2))+ ggtitle("") + xlab("PC1 (XX%)")+ylab("PC2 (XX%)") 
++ geom_point() +theme_bw()+ aes(fill = factor(specie), color = factor(specie))
++ geom_polygon(data = hull_PCA, alpha = 0.2) + geom_text(aes(label=names), size = 3, color = "black", hjust=0, vjust=-1) 
+
+############# Procrustes ANOVA 
+
+Z <- procD.lm(DFZ~specie)
+summary(Z)
+
+############# Covariation
+
+# Muscle data
+muscle <-read.csv(file = "muscle_data.csv", header = TRUE, sep=";", dec = ".",stringsAsFactor=FALSE, row.names=1)
+
+# Shape data (2D maps obtained earlier)
+shape <- DFZ
+
+# Two-block partial least squares analysis
+PLS<- two.b.pls(muscle, shape)
+summary(PLS)
+names<-rownames(muscle)
+plot(PLS, label = names, pch=19)
+
+
